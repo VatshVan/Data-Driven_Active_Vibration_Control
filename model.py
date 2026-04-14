@@ -2,7 +2,6 @@ import torch
 import numpy as np
 import scipy.sparse as sp
 import pandas as pd
-import pickle
 from MPC import RTINeuralMPC
 from State_space import HybridSystemDynamics, AlphaConfig
 
