@@ -3,21 +3,30 @@ import numpy as np
 import scipy.sparse as sp
 import osqp
 
-class RTINeuralMPC:
+class MIMO_HyperRTIMPC:
     def __init__(self, dynamics, N, Q, R, u_min, u_max, dt):
         self.sys = dynamics
         self.N = N
-        self.nx = 2
-        self.nu = 1
+        self.nx = 6
+        self.nu = 4
         self.Q = Q
         self.R = R
-        self.u_min = u_min
-        self.u_max = u_max
+        self.u_min = np.array(u_min) if isinstance(u_min, (list, np.ndarray)) else np.full(self.nu, u_min)
+        self.u_max = np.array(u_max) if isinstance(u_max, (list, np.ndarray)) else np.full(self.nu, u_max)
         self.dt = dt
         self.nz = N * (self.nx + self.nu) + self.nx
+        self.x_ref = np.zeros(self.nx)
         self.P, self.q = self._build_hessian()
         self.u_guess = torch.zeros((self.N, self.nu))
         self.x_guess = torch.zeros((self.N + 1, self.nx))
+        self.solver = osqp.OSQP()
+        self.solver_initialized = False
+
+    def set_target(self, x_target):
+        self.x_ref = np.array(x_target)
+        self.P, self.q = self._build_hessian()
+        if self.solver_initialized:
+            self.solver.update(q=self.q)
 
     def _build_hessian(self):
         blocks = []
@@ -26,7 +35,13 @@ class RTINeuralMPC:
             blocks.append(self.R)
         blocks.append(self.Q)
         P = sp.block_diag(blocks, format='csc')
+        
         q = np.zeros(self.nz)
+        for k in range(self.N):
+            idx_x = k * (self.nx + self.nu)
+            q[idx_x:idx_x+self.nx] = -self.Q @ self.x_ref
+        q[-self.nx:] = -self.Q @ self.x_ref
+        
         return P, q
 
     def _build_kkt(self, x_init, A_seq, B_seq, x_bar):
@@ -60,8 +75,8 @@ class RTINeuralMPC:
         u_eq = l_eq.copy()
         
         A_ineq = sp.lil_matrix((self.N * self.nu, self.nz))
-        l_ineq = np.full(self.N * self.nu, self.u_min)
-        u_ineq = np.full(self.N * self.nu, self.u_max)
+        l_ineq = np.tile(self.u_min, self.N)
+        u_ineq = np.tile(self.u_max, self.N)
         
         for k in range(self.N):
             row = k * self.nu
@@ -74,8 +89,15 @@ class RTINeuralMPC:
         
         return A_qp, l_qp, u_qp
 
+    def _shift_horizon(self):
+        self.u_guess[:-1] = self.u_guess[1:].clone()
+        self.u_guess[-1] = self.u_guess[-1].clone()
+        self.x_guess[:-1] = self.x_guess[1:].clone()
+        self.x_guess[-1] = self.x_guess[-1].clone()
+
     def step(self, x_current):
         with torch.no_grad():
+            self._shift_horizon()
             self.x_guess[0] = x_current
             for k in range(self.N):
                 self.x_guess[k+1] = self.sys.rk4_step(
@@ -85,12 +107,16 @@ class RTINeuralMPC:
                 ).squeeze(0)
                 
         A_seq, B_seq = self.sys.rk4_jacobians(self.x_guess[:-1], self.u_guess, self.dt)
-        
         A_qp, l_qp, u_qp = self._build_kkt(x_current, A_seq, B_seq, self.x_guess)
         
-        solver = osqp.OSQP()
-        solver.setup(P=self.P, q=self.q, A=A_qp, l=l_qp, u=u_qp, warm_start=True, verbose=False)
-        res = solver.solve()
+        if not self.solver_initialized:
+            self.solver.setup(P=self.P, q=self.q, A=A_qp, l=l_qp, u=u_qp, warm_start=True, verbose=False)
+            self.solver_initialized = True
+        else:
+            self.solver.update(l=l_qp, u=u_qp)
+            self.solver.update(Ax=A_qp.data)
+            
+        res = self.solver.solve()
         
         if res.info.status_val != 1:
             return self.u_guess[0].clone()

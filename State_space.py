@@ -3,10 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.func import jacrev, vmap
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, Dict
 
-class SpringMassDamperPINN(nn.Module):
-    def __init__(self, input_dim: int = 3, hidden_dim: int = 32, output_dim: int = 2, n_layers: int = 2):
+class HyperResidualNet(nn.Module):
+    def __init__(self, input_dim: int = 11, hidden_dim: int = 64, output_dim: int = 3, n_layers: int = 3):
         super().__init__()
         layers = [nn.Linear(input_dim, hidden_dim), nn.Tanh()]
         for _ in range(n_layers - 1):
@@ -19,9 +19,13 @@ class SpringMassDamperPINN(nn.Module):
                 nn.init.xavier_uniform_(m.weight, gain=0.1)
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
-        xu = torch.cat([x, u], dim=-1)
-        return self.net(xu)
+    def forward(self, x: torch.Tensor, u: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
+        if x.dim() > 1:
+            theta_exp = theta.expand(x.shape[0], -1)
+            xut = torch.cat([x, u, theta_exp], dim=-1)
+        else:
+            xut = torch.cat([x, u, theta], dim=-1)
+        return self.net(xut)
 
 @dataclass
 class AlphaConfig:
@@ -49,51 +53,93 @@ class AlphaScheduler:
     def reset(self):
         self._alpha = self.cfg.alpha_init
 
-class HybridSystemDynamics(nn.Module):
-    A_p: torch.Tensor
-    B_p: torch.Tensor
-
-    def __init__(self, m: float, c: float, k: float, pinn: SpringMassDamperPINN | None = None, alpha_cfg: AlphaConfig = AlphaConfig(), device: str | torch.device = "cpu"):
+class SpatialHybridDynamics(nn.Module):
+    def __init__(self, m_init: float, Ixx: float, Iyy: float, 
+                 k_arr: list[float], c_arr: list[float], 
+                 pos_arr: list[Tuple[float, float]], 
+                 net: HyperResidualNet | None = None, 
+                 alpha_cfg: AlphaConfig = AlphaConfig(), 
+                 device: str | torch.device = "cpu"):
         super().__init__()
-        self.m = float(m)
-        self.c = float(c)
-        self.k = float(k)
+        self.register_buffer("m_hat", torch.tensor([m_init], dtype=torch.float32))
+        self.Ixx = float(Ixx)
+        self.Iyy = float(Iyy)
         
-        self.register_buffer(
-            "A_p",
-            torch.tensor([[0.0, 1.0], [-k/m, -c/m]], dtype=torch.float32)
-        )
-        self.register_buffer(
-            "B_p",
-            torch.tensor([[0.0], [1.0/m]], dtype=torch.float32)
-        )
+        T_list = [[1.0, float(y_i), -float(x_i)] for x_i, y_i in pos_arr]
+        T = torch.tensor(T_list, dtype=torch.float32).T
+        self.register_buffer("T", T)
+
+        K = torch.diag(torch.tensor(k_arr, dtype=torch.float32))
+        C = torch.diag(torch.tensor(c_arr, dtype=torch.float32))
+        self.register_buffer("K", K)
+        self.register_buffer("C", C)
         
-        self.pinn = pinn if pinn is not None else SpringMassDamperPINN()
+        self.net = net if net is not None else HyperResidualNet()
         self._scheduler = AlphaScheduler(alpha_cfg)
         self.to(device)
 
+    def update_mass_estimate(self, m_new: float):
+        self.m_hat[0] = m_new
+
+    def extract_telemetry(self, x: torch.Tensor, u: torch.Tensor) -> Dict[str, torch.Tensor]:
+        pos = x[..., 0:3]
+        vel = x[..., 3:6]
+        
+        z_corners = pos @ self.T
+        v_corners = vel @ self.T
+        
+        f_spring = -(z_corners @ self.K)
+        f_damper = -(v_corners @ self.C)
+        f_passive = f_spring + f_damper
+        
+        f_net_corners = f_passive + u
+        wrench_cg = f_net_corners @ self.T.T
+        
+        M_inv = torch.diag(torch.tensor([1.0/self.m_hat.item(), 1.0/self.Ixx, 1.0/self.Iyy], dtype=torch.float32, device=self.T.device))
+        accel_nominal = wrench_cg @ M_inv
+        
+        accel_residual = self.net(x, u, self.m_hat)
+        
+        return {
+            "z_corners": z_corners,
+            "v_corners": v_corners,
+            "f_spring": f_spring,
+            "f_damper": f_damper,
+            "f_passive": f_passive,
+            "f_net_corners": f_net_corners,
+            "wrench_cg": wrench_cg,
+            "accel_nominal": accel_nominal,
+            "accel_residual": accel_residual
+        }
+
+    def _compute_matrices(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        M_inv = torch.diag(torch.tensor([1.0/self.m_hat.item(), 1.0/self.Ixx, 1.0/self.Iyy], dtype=torch.float32, device=self.T.device))
+        
+        A_pos = -M_inv @ (self.T @ self.K @ self.T.T)
+        A_vel = -M_inv @ (self.T @ self.C @ self.T.T)
+        
+        A = torch.zeros((6, 6), dtype=torch.float32, device=self.T.device)
+        A[0:3, 3:6] = torch.eye(3, device=self.T.device)
+        A[3:6, 0:3] = A_pos
+        A[3:6, 3:6] = A_vel
+        
+        B = torch.zeros((6, 4), dtype=torch.float32, device=self.T.device)
+        B[3:6, :] = M_inv @ self.T
+        
+        return A, B
+
     def _alpha_tensor(self) -> torch.Tensor:
-        return torch.tensor(
-            self._scheduler.alpha,
-            dtype=torch.float32,
-            device=self.A_p.device
-        )
+        return torch.tensor(self._scheduler.alpha, dtype=torch.float32, device=self.T.device)
 
     def _f_physics(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
-        return x @ self.A_p.T + u @ self.B_p.T
-
-    def residual_target(self, x_dot: torch.Tensor, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
-        return x_dot - self._f_physics(x, u)
-
-    def residual_loss(self, x_dot: torch.Tensor, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
-        target = self.residual_target(x_dot, x, u)
-        prediction = self.pinn(x, u)
-        return F.mse_loss(prediction, target)
+        A, B = self._compute_matrices()
+        return x @ A.T + u @ B.T
 
     def forward(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
         alpha = self._alpha_tensor().to(dtype=x.dtype, device=x.device)
         f_p = self._f_physics(x, u)
-        f_d = self.pinn(x, u)
+        f_d_accel = self.net(x, u, self.m_hat)
+        f_d = torch.cat([torch.zeros_like(f_d_accel), f_d_accel], dim=-1)
         return f_p + alpha * f_d
 
     def rk4_step(self, x: torch.Tensor, u: torch.Tensor, dt: float) -> torch.Tensor:
@@ -109,26 +155,4 @@ class HybridSystemDynamics(nn.Module):
 
         A_k = vmap(jacrev(step_fn, argnums=0))(x, u)
         B_k = vmap(jacrev(step_fn, argnums=1))(x, u)
-        
         return A_k, B_k
-
-    def physics_jacobians(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.A_p.clone(), self.B_p.clone()
-
-    def get_alpha(self) -> float:
-        return self._scheduler.alpha
-
-    def update_alpha(self, val_loss: float) -> float:
-        return self._scheduler.update(val_loss)
-
-    def reset_alpha(self):
-        self._scheduler.reset()
-
-    def diagnostics(self) -> dict:
-        return {
-            "alpha": self.get_alpha(),
-            "m": self.m,
-            "c": self.c,
-            "k": self.k,
-            "pinn_params": sum(p.numel() for p in self.pinn.parameters())
-        }
