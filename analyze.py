@@ -5,7 +5,7 @@ import seaborn as sns
 import pickle
 import sys
 
-def generate_telemetry_report(filepath='verification_telemetry.pkl'):
+def generate_telemetry_report(filepath='verification_telemetry_1.pkl'):
     try:
         with open(filepath, 'rb') as f:
             telemetry_payload = pickle.load(f)
@@ -45,7 +45,7 @@ def generate_telemetry_report(filepath='verification_telemetry.pkl'):
     axes[2].set_ylabel('Seconds')
 
     plt.tight_layout()
-    plt.savefig('monte_carlo_distributions.png', dpi=300)
+    plt.savefig('monte_carlo_distributions_1.png', dpi=300)
 
     fig_phase, ax_phase = plt.subplots(figsize=(10, 8))
     
@@ -64,7 +64,7 @@ def generate_telemetry_report(filepath='verification_telemetry.pkl'):
     ax_phase.legend(loc='upper right')
     
     plt.tight_layout()
-    plt.savefig('comparative_phase_portrait.png', dpi=300)
+    plt.savefig('comparative_phase_portrait_1.png', dpi=300)
     print("Analytics render complete. Artifacts saved locally.")
 
 if __name__ == "__main__":

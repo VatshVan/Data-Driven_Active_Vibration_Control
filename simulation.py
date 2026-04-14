@@ -35,9 +35,9 @@ def execute_verification_matrix():
         dynamics = HybridSystemDynamics(m=1.0, c=0.5, k=2.0, alpha_cfg=alpha_cfg)
         return AdversarialPlant(dynamics, dt, noise_cov=np.diag([1e-5, 1e-4]), param_variance=0.10)
 
-    df_a, traj_a = run_monte_carlo_suite(mpc_generator, plant_scenario_a, "Nominal", 10)
-    df_b, traj_b = run_monte_carlo_suite(mpc_generator, plant_scenario_b, "Parametric Mismatch", 10)
-    df_c, traj_c = run_monte_carlo_suite(mpc_generator, plant_scenario_c, "Sensor Degradation", 10)
+    df_a, traj_a = run_monte_carlo_suite(mpc_generator, plant_scenario_a, "Nominal", 50)
+    df_b, traj_b = run_monte_carlo_suite(mpc_generator, plant_scenario_b, "Parametric Mismatch", 50)
+    df_c, traj_c = run_monte_carlo_suite(mpc_generator, plant_scenario_c, "Sensor Degradation", 50)
 
     df_consolidated = pd.concat([df_a, df_b, df_c], ignore_index=True)
     trajectories = {
@@ -51,10 +51,10 @@ def execute_verification_matrix():
         'trajectory_samples': trajectories
     }
     
-    with open('verification_telemetry.pkl', 'wb') as f:
+    with open('verification_telemetry_1.pkl', 'wb') as f:
         pickle.dump(telemetry_payload, f)
         
-    print("Data serialization complete. Payload saved to verification_telemetry.pkl")
+    print("Data serialization complete. Payload saved to verification_telemetry_1.pkl")
 
 if __name__ == "__main__":
     execute_verification_matrix()
