@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="spatial_platform">
+  
+  <link name="platform">
+    <inertial>
+      <mass value="12.0"/>
+      <inertia ixx="2.5" ixy="0" ixz="0" iyy="3.2" iyz="0" izz="5.0"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <box size="1.0 0.8 0.05"/>
+      </geometry>
+      <material name="cyan"><color rgba="0.0 1.0 1.0 1.0"/></material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="1.0 0.8 0.05"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <gazebo reference="platform">
+    <material>Gazebo/Turquoise</material>
+  </gazebo>
+
+  <gazebo>
+    <plugin name="gazebo_ros_p3d" filename="libgazebo_ros_p3d.so">
+      <ros>
+        <namespace>/platform</namespace>
+        <remapping>odom:=odom</remapping>
+      </ros>
+      <body_name>platform</body_name>
+      <frame_name>world</frame_name>
+      <update_rate>100.0</update_rate>
+    </plugin>
+  </gazebo>
+
+  <gazebo reference="platform">
+    <sensor name="platform_imu" type="imu">
+      <always_on>true</always_on>
+      <update_rate>100.0</update_rate>
+      <plugin name="gazebo_ros_imu_sensor" filename="libgazebo_ros_imu_sensor.so">
+        <ros>
+          <namespace>/platform</namespace>
+          <remapping>~/out:=imu</remapping>
+        </ros>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <xacro:macro name="corner_force" params="suffix x y">
+    <gazebo>
+      <plugin name="force_${suffix}" filename="libgazebo_ros_force.so">
+        <ros>
+          <remapping>gazebo_ros_force:=/actuator_${suffix}_controller/command</remapping>
+        </ros>
+        <link_name>platform</link_name>
+        <force_frame>world</force_frame>
+        <point_of_application>${x} ${y} 0</point_of_application>
+      </plugin>
+    </gazebo>
+  </xacro:macro>
+
+  <xacro:corner_force suffix="fl" x="0.5" y="0.4"/>
+  <xacro:corner_force suffix="fr" x="0.5" y="-0.4"/>
+  <xacro:corner_force suffix="rl" x="-0.5" y="0.4"/>
+  <xacro:corner_force suffix="rr" x="-0.5" y="-0.4"/>
+
+</robot>
