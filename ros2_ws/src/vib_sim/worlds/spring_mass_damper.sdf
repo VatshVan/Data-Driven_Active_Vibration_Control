@@ -1,0 +1,166 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <world name="spring_mass_world">
+
+    <!-- ==================== PHYSICS ==================== -->
+    <physics name="1ms" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+
+    <!-- ==================== PLUGINS ==================== -->
+    <plugin filename="gz-sim-physics-system"
+            name="gz::sim::systems::Physics">
+    </plugin>
+    <plugin filename="gz-sim-scene-broadcaster-system"
+            name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system"
+            name="gz::sim::systems::UserCommands">
+    </plugin>
+
+    <!-- ==================== LIGHTING ==================== -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>1 1 1 1</diffuse>
+      <specular>0.5 0.5 0.5 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- ==================== GROUND PLANE ==================== -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="ground_link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ==================== SPRING-MASS-DAMPER MODEL ==================== -->
+    <model name="spring_mass_damper">
+
+      <!-- Anchor/Base (fixed to world) -->
+      <link name="base_link">
+        <pose>0 0 3.0 0 0 0</pose>
+        <visual name="base_visual">
+          <geometry>
+            <box>
+              <size>0.6 0.6 0.1</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.2 0.8 1</ambient>
+            <diffuse>0.2 0.2 0.8 1</diffuse>
+          </material>
+        </visual>
+        <collision name="base_collision">
+          <geometry>
+            <box>
+              <size>0.6 0.6 0.1</size>
+            </box>
+          </geometry>
+        </collision>
+        <inertial>
+          <mass>1000.0</mass>
+          <inertia>
+            <ixx>10.0</ixx>
+            <iyy>10.0</iyy>
+            <izz>10.0</izz>
+          </inertia>
+        </inertial>
+      </link>
+
+      <!-- Fix base to the world so it doesn't fall -->
+      <joint name="world_to_base" type="fixed">
+        <parent>world</parent>
+        <child>base_link</child>
+      </joint>
+
+      <!-- Mass (the box that oscillates) -->
+      <link name="mass_link">
+        <pose>0 0 2.0 0 0 0</pose>
+        <visual name="mass_visual">
+          <geometry>
+            <box>
+              <size>0.3 0.3 0.3</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.8 0.2 0.2 1</ambient>
+            <diffuse>0.8 0.2 0.2 1</diffuse>
+          </material>
+        </visual>
+        <collision name="mass_collision">
+          <geometry>
+            <box>
+              <size>0.3 0.3 0.3</size>
+            </box>
+          </geometry>
+        </collision>
+        <inertial>
+          <mass>5.0</mass>
+          <inertia>
+            <ixx>0.0375</ixx>
+            <iyy>0.0375</iyy>
+            <izz>0.0375</izz>
+          </inertia>
+        </inertial>
+      </link>
+
+      <!-- PRISMATIC JOINT = Spring + Damper -->
+      <joint name="spring_joint" type="prismatic">
+        <parent>base_link</parent>
+        <child>mass_link</child>
+        <axis>
+          <xyz>0 0 1</xyz>
+          <limit>
+            <lower>-2.0</lower>
+            <upper>1.0</upper>
+            <effort>1000</effort>
+            <velocity>10</velocity>
+          </limit>
+          <dynamics>
+            <spring_stiffness>200.0</spring_stiffness>
+            <spring_reference>-1.0</spring_reference>
+            <damping>10.0</damping>
+            <friction>0.0</friction>
+          </dynamics>
+        </axis>
+      </joint>
+
+      <!-- Plugin: Publish joint states to Gazebo topics -->
+      <plugin filename="gz-sim-joint-state-publisher-system"
+              name="gz::sim::systems::JointStatePublisher">
+        <joint_name>spring_joint</joint_name>
+      </plugin>
+
+      <!-- Plugin: Allow applying force commands to the joint -->
+      <plugin filename="gz-sim-apply-joint-force-system"
+              name="gz::sim::systems::ApplyJointForce">
+        <joint_name>spring_joint</joint_name>
+      </plugin>
+
+    </model>
+
+  </world>
+</sdf>
